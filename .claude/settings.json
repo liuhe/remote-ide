@@ -1,0 +1,25 @@
+{
+  "hooks": {
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "echo '{\"hookSpecificOutput\": {\"hookEventName\": \"UserPromptSubmit\", \"additionalContext\": \"处理用户请求前，先判断上一轮是否有需要记录的内容（操作结果、领域知识、决策等）。按 knowledge-structure.md 的分层落位：核心常驻约束→CLAUDE.md；参考数据→独立文件；操作流程→.claude/skills/；项目内进展→projects/<name>/{tasks,log}.md。有则先更新，没有则直接处理请求。\"}}'"
+          }
+        ]
+      }
+    ],
+    "TaskCompleted": [
+      {
+        "hooks": [
+          {
+            "type": "agent",
+            "prompt": "你是项目验收 agent。任务刚完成，你需要评估它是否真正达成了项目目标。\n\n步骤：\n1. 找到当前项目目录（projects/ 下），读取 overview.md 了解项目目标\n2. 读取 tasks.md 了解当前任务的具体要求\n3. 检查实际完成情况，重点关注：\n   - 目标是否完整达成（不只是表面完成）\n   - 有无稳定性问题（边界情况、异常输入、并发等）\n   - 有无遗漏的关键场景\n   - 有无潜在的副作用或破坏性\n4. 判断：\n   - 如果完全达成且稳健：输出 {\"decision\": \"allow\"}\n   - 如果存在不足：输出 {\"decision\": \"block\", \"reason\": \"具体说明哪些方面不足，需要做什么才能达成目标\"}",
+            "timeout": 120
+          }
+        ]
+      }
+    ]
+  }
+}

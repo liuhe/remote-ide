@@ -1,0 +1,82 @@
+# Deployment View — Overview
+# Detail: ./deployment/<topic>.yaml (按需)
+# Topology diagram: ./deployment/topology.svg (TODO)
+
+# remote-ide 当前部署：单节点（个人工作站），launchd 托管 server，server 同时
+# 静态托管 web/dist；外部访问可通过 DDNS / 隧道 / 反代接入。
+
+nodes:
+  - name: local-workstation
+    type: host
+    description: '个人 macOS 工作站；同时承载 remote-ide server 与 CLI 子进程'
+    hosts:
+      - server                  # remote-ide Fastify
+      - web                     # 由 server 静态托管（同进程）
+      - claude-cli              # spawn 自 server
+      - devin-cli               # spawn 自 server
+      - headless-chrome         # 按需 spawn（puppeteer-core）
+    process_manager: launchd
+    launchd_label: com.eric.remote-ide
+    launchd_plist: ~/Library/LaunchAgents/com.eric.remote-ide.plist
+    logs:
+      stdout: ~/Library/Logs/remote-ide.log
+      stderr: ~/Library/Logs/remote-ide.err
+    storage:
+      - path: ~/.config/remote-ide/
+        purpose: 用户态配置（users.json, sessions.json, users/<uid>/*.json）
+      - path: ~/.claude/projects/<encoded-cwd>/
+        purpose: claude CLI 自管的 jsonl transcript（server 只读，不拥有）
+
+  - name: browser
+    type: client
+    description: 用户的手机 / 桌面浏览器（移动端为主，PWA 可装）
+
+  - name: ddns / 内网穿透
+    type: edge
+    description: 可选的 DDNS / 隧道 / 反代入口；细节不在本模型管辖范围
+
+network:
+  - from: browser
+    to: local-workstation
+    port: 9991
+    protocol: http
+    note: 内网直连 0.0.0.0:9991；公网可走 DDNS / 隧道 / 反代
+  - from: browser
+    to: local-workstation
+    port: 9991
+    protocol: ws
+    path: /ws/session, /ws/devin
+  - from: server (local-workstation)
+    to: claude-cli (local-workstation)
+    protocol: pipe (stdio)
+    note: stream-json
+  - from: server (local-workstation)
+    to: devin-cli (local-workstation)
+    protocol: pipe (stdio)
+    note: ACP JSON-RPC
+  - from: server (local-workstation)
+    to: headless-chrome (local-workstation)
+    protocol: CDP (loopback)
+    note: puppeteer-core 通过本地 Chrome 二进制
+
+config:
+  - application: server
+    env:
+      - PORT (default 9991)
+      - HOST (default 0.0.0.0)
+      - REMOTE_IDE_CONFIG_DIR (override 默认 ~/.config/remote-ide)
+      - REMOTE_IDE_PASSWORD (legacy 迁移用；新装无需)
+      - CHROME_EXECUTABLE (puppeteer override；macOS/Linux 自动发现)
+      - CLAUDE_CODE_ENABLE_SDK_FILE_CHECKPOINTING (server 自己强制 = 1)
+    files:
+      - .env (repo root) — server cwd 启动时读取
+    secrets:
+      - users.json scrypt 哈希（不可逆）
+      - sessions.json token（HttpOnly cookie 实物）
+
+constraints:
+  - 'pnpm v11 把未授权 native build script 视为 fatal；新增带 install script 的依赖必须同步加入 pnpm-workspace.yaml 的 allowBuilds 且值为 boolean true，否则 launchd 启动 pnpm --filter server start 直接挂'
+  - 'server 由 launchd 托管；改完代码用 `launchctl kickstart -k gui/$(id -u)/com.eric.remote-ide` 重启，不要手动 pnpm dev:server'
+  - 'web/src 改动必须 `pnpm --filter web build`；server 用 @fastify/static 托管 dist，仅 tsc --noEmit 不会更新浏览器看到的产物'
+
+diagram: ./deployment/topology.svg

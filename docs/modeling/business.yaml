@@ -1,0 +1,214 @@
+# Business View — Overview
+# remote-ide: 浏览器远程访问一台机器，浏览文件 + 与 Claude/Devin AI 对话。
+
+organization: Personal Dev Environment
+
+# 个人工具，组织内无业务工人（无客服 / 运维等内部人员）；Developer 是组织外的使用者
+business_workers: []
+
+external_parties:
+  - name: Developer        # 业务执行者——使用本工作台的开发者人群
+    participants:
+      - name: Developer
+        type: person
+  - name: Claude Code Service
+    type: system
+  - name: Devin Service
+    type: system
+  # Host File System / Headless Chrome 不在业务参与方里——它们是 server 的
+  # 技术外部依赖，体现在应用视图的 application_topology。
+
+systems:
+  - name: remote-ide
+    use_cases:
+      # ─── Auth ────────────────────────────────────────────
+      - name: Login
+        package: Auth
+        actor: Developer
+        entry: web.Login
+      - name: Logout
+        package: Auth
+        actor: Developer
+        entry: web.Logout
+
+      # ─── Project & Workspace ─────────────────────────────
+      - name: List Projects
+        package: Project & Workspace
+        actor: Developer
+        entry: web.ProjectPicker
+      - name: Add Project
+        package: Project & Workspace
+        actor: Developer
+        entry: web.AddProject
+      - name: Delete Project
+        package: Project & Workspace
+        actor: Developer
+        entry: web.DeleteProject
+      - name: Open Tab
+        package: Project & Workspace
+        actor: Developer
+        entry: web.OpenTab
+      - name: Close Tab
+        package: Project & Workspace
+        actor: Developer
+        entry: web.CloseTab
+      - name: Persist Workspace
+        package: Project & Workspace
+        actor: Developer
+        entry: web.PersistWorkspace      # tabs[] 落盘到 server
+
+      # ─── File Browse ─────────────────────────────────────
+      - name: Browse Directory
+        package: File Browse
+        actor: Developer
+        entry: web.FileTree
+      - name: View File
+        package: File Browse
+        actor: Developer
+        entry: web.Viewer
+      - name: Open Raw Resource
+        package: File Browse
+        actor: Developer
+        entry: server.ServeRawFile       # /raw/<projectId>/<path> 给 HTML 相对引用
+
+      # ─── Claude Session ──────────────────────────────────
+      - name: Start Claude Session
+        package: Claude Session
+        actor: Developer
+        entry: web.ChatPanel
+      - name: Resume Claude Session
+        package: Claude Session
+        actor: Developer
+        entry: web.SessionPicker
+      - name: Send Prompt to Claude
+        package: Claude Session
+        actor: Developer
+        entry: web.SendPrompt
+      - name: Switch Model Mid-Session
+        package: Claude Session
+        actor: Developer
+        entry: web.SwitchModel
+      - name: Interrupt Claude Generation
+        package: Claude Session
+        actor: Developer
+        entry: web.StopGeneration
+      - name: Rewind Claude to Message
+        package: Claude Session
+        actor: Developer
+        entry: web.RewindMessage         # 编辑历史消息 + 回滚文件
+      - name: List Historical Sessions
+        package: Claude Session
+        actor: Developer
+        entry: web.SessionPicker
+      - name: Load Transcript Page
+        package: Claude Session
+        actor: Developer
+        entry: web.ChatPanel             # 分页加载历史 events
+      - name: Detect External Session Change
+        package: Claude Session
+        actor: Claude Code Service
+        entry: server.WatchJsonl         # claude CLI 在别处改了 jsonl → 通知前端
+
+      # ─── Devin Session ───────────────────────────────────
+      - name: Start Devin Session
+        package: Devin Session
+        actor: Developer
+        entry: web.DevinPanel
+      - name: Resume Devin Session
+        package: Devin Session
+        actor: Developer
+        entry: web.DevinPanel
+      - name: Send Prompt to Devin
+        package: Devin Session
+        actor: Developer
+        entry: web.SendPrompt
+      - name: Approve Devin Permission
+        package: Devin Session
+        actor: Developer
+        entry: web.PermissionPrompt
+      - name: Switch Devin Mode
+        package: Devin Session
+        actor: Developer
+        entry: web.SwitchModel
+
+      # ─── Export ──────────────────────────────────────────
+      - name: Export Session as Markdown
+        package: Export
+        actor: Developer
+        entry: web.ExportDialog
+      - name: Export Session as PDF
+        package: Export
+        actor: Developer
+        entry: web.ExportDialog
+        associations:
+          - relation: Include
+            name: Render via Headless Chrome
+      - name: Export Session as PNG
+        package: Export
+        actor: Developer
+        entry: web.ExportDialog
+        associations:
+          - relation: Include
+            name: Render via Headless Chrome
+      - name: Render via Headless Chrome
+        package: Export
+        entry: server.RenderExport
+
+      # ─── Settings ────────────────────────────────────────
+      - name: Configure Settings
+        package: Settings
+        actor: Developer
+        entry: web.Settings              # sendKey / theme / fontScale / model / devinModel
+
+business_use_cases:
+  - name: 远程使用 AI 能力
+    actor: Developer
+    system_use_cases:
+      # 入口
+      - Login
+      - Logout
+      # 组织（Project / Tab / Workspace 都是承载 AI 工作的容器）
+      - List Projects
+      - Add Project
+      - Delete Project
+      - Open Tab
+      - Close Tab
+      - Persist Workspace
+      # Claude
+      - Start Claude Session
+      - Resume Claude Session
+      - Send Prompt to Claude
+      - Switch Model Mid-Session
+      - Interrupt Claude Generation
+      - Rewind Claude to Message
+      - List Historical Sessions
+      - Load Transcript Page
+      - Detect External Session Change
+      # Devin
+      - Start Devin Session
+      - Resume Devin Session
+      - Send Prompt to Devin
+      - Approve Devin Permission
+      - Switch Devin Mode
+      # 导出 AI 对话留存
+      - Export Session as Markdown
+      - Export Session as PDF
+      - Export Session as PNG
+      - Render via Headless Chrome
+      # 偏好（影响 AI 行为：模型、发送键等）
+      - Configure Settings
+    stakeholder_interests:
+      - stakeholder: Developer
+        interest: 不在主机前也能用任何浏览器（特别是手机）驱动远端的 Claude / Devin 会话——开新会话 / 续历史 / 中途切模型 / rewind 编辑 / 导出留存全程一站式，跨设备状态不丢
+
+  - name: 免 SSH 查看远端文件
+    actor: Developer
+    system_use_cases:
+      - Login
+      - List Projects
+      - Browse Directory
+      - View File
+      - Open Raw Resource
+    stakeholder_interests:
+      - stakeholder: Developer
+        interest: 只想看远端机器上的代码 / markdown / pdf / 图片 / HTML，不开 SSH、不下载到本地

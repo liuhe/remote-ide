@@ -1,0 +1,59 @@
+name: Devin Session
+archetype: moment-interval
+fields:
+  - sessionId: "String (slug, e.g. 'purrfect-opinion'), 由 devin ACP 在 session/new 或 session/load 响应里给出；Tab.resumeId 即此值"
+  - cwd: "String, 等同关联 Project.path"
+  - currentModeId: "String?, 最近一次 mode 通知中的模式"
+  - configOptions: "Array?, 缓存的可选项"
+  - initialized: "Boolean, initialize 响应是否已回来；其它请求需排队等它"
+  - promptPending: "Boolean (runtime only), session/prompt RPC 是否在飞行中（thinking 等价物）"
+  - clients: "Set<WebSocket> (runtime only)"
+notes: >
+  与 Claude Session 完全并行的概念，但走 ACP（Agent Client Protocol）JSON-RPC
+  而非 stream-json。session.ts 与 devin.ts 刻意隔离——一个出问题不影响另一个。
+  存储由 devin 自管理（内部 SQLite），server 不直接写。
+state_machine:
+  field: lifecycle
+  states: [Spawning, Initializing, Live, PromptPending, IdleDraining, Killed]
+  transitions:
+    - from: Spawning
+      to: Initializing
+      trigger: 子进程起来，server 发出 initialize RPC
+    - from: Initializing
+      to: Live
+      trigger: initialize 响应回来；缓存 pendingClientReqs 释放
+    - from: Initializing
+      to: Killed
+      trigger: INIT_TIMEOUT_MS（30s）内未收到响应
+    - from: Live
+      to: PromptPending
+      trigger: 客户端 session/prompt 进入 inflight
+    - from: PromptPending
+      to: Live
+      trigger: session/prompt 响应回来
+    - from: Live
+      to: IdleDraining
+      trigger: 最后一个 client 关 WS
+    - from: IdleDraining
+      to: Live
+      trigger: 新 client attach（grace 内）
+    - from: IdleDraining
+      to: Killed
+      trigger: CLIENT_DRAIN_GRACE_MS（5 分钟）到期
+rules:
+  - content: initialize 未完成时，client 发的请求暂存在 pendingClientReqs，待 initialize 返回后逐条转发
+    related_use_cases:
+      - server.DevinSessionBridge
+  - content: agent 反向 RPC：仅 session/request_permission 转发给 client（PERMISSION_TIMEOUT_MS = 5 分钟未答即代答 reject）；fs/* 与 terminal/* 一律就地拒绝
+    related_use_cases:
+      - server.DevinSessionBridge
+      - web.PermissionPrompt
+  - content: 与 Claude Session 共享 5 分钟 client drain grace 和 30s WS 心跳
+    related_use_cases:
+      - server.DevinSessionBridge
+relationships:
+  - kind: associates
+    target: Project
+    target_kind: business-entity
+    via: cwd
+    cardinality: many-to-one

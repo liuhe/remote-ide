@@ -1,0 +1,26 @@
+name: Settings
+archetype: description
+fields:
+  - sendKey: "Enum { enter | cmd-enter | shift-enter }, 发送消息的按键；默认 cmd-enter"
+  - theme: "Enum { dark | light | dim }, 默认 dark"
+  - fontScale: "Enum { small | normal | large | xlarge | huge | xhuge }, 默认 normal"
+  - model: "String, claude CLI --model 参数；'' = claude 默认；接受 'opus'/'sonnet'/'haiku' 别名或完整 ID"
+  - devinModel: "String?, devin ACP 用的模型 id；'' = 让 devin 自己选"
+notes: >
+  用户级偏好，per-user。落盘在 ~/.config/remote-ide/users/<uid>/settings.json。
+  缺字段时合并 DEFAULT_SETTINGS。spawn Claude Session 时若 model 为空，会扫
+  最近 jsonl 找上次的 assistant.model 作为前端展示 hint（system.init 回来会覆盖）。
+rules:
+  - content: GET 读盘时与 DEFAULT_SETTINGS 浅合并；PUT 写盘时同样合并后写入
+    related_use_cases:
+      - server.GetSettings
+      - server.PutSettings
+  - content: model 为空时 spawn 不传 --model；非空时 .trim() 后追加
+    related_use_cases:
+      - server.ClaudeSessionBridge
+relationships:
+  - kind: associates
+    target: User
+    target_kind: business-entity
+    cardinality: one-to-one
+    note: 主动方是 User（composition）

@@ -1,0 +1,32 @@
+name: claude-cli
+type: external
+tech_stack:
+  implementation: Anthropic Claude Code CLI（`claude` binary，需提前安装并在 PATH）
+notes: >
+  外部进程。server 用固定参数 spawn：
+    claude -p --input-format stream-json --output-format stream-json
+           --verbose --include-partial-messages --dangerously-skip-permissions
+           [--model <model>] [--resume <sessionId>]
+  环境强制 CLAUDE_CODE_ENABLE_SDK_FILE_CHECKPOINTING=1（让 -p 模式也写 file-history-snapshot，
+  这是 --rewind-files 的前提）。
+  事实文件落在 ~/.claude/projects/<encoded-cwd>/<sessionId>.jsonl；encodeCwd 把 / 替换为 -。
+
+use_cases:
+  - name: StreamJsonDialog
+    package: Dialog
+    actor: server
+    rules:
+      - content: 通过 stdin 接收 {type:'user', message:{role:'user', content:[...]}} 行 JSON；stdout 流式回 {type:'system'|'assistant'|'user'|'result'|...} 行 JSON
+      - content: control_request(subtype:set_model) 触发新 system.init.model；control_request(subtype:interrupt) 触发 result(terminal_reason:aborted_streaming) 但进程不退
+      - content: 每次启动自分配 sessionId 并写在首条 system.init.session_id；--resume 时沿用既有 jsonl
+
+  - name: RewindFiles
+    package: Rewind
+    actor: server
+    rules:
+      - content: 一次性进程 `claude --resume <sid> --rewind-files <uuid>` 把指定 user 消息之后被编辑的文件全部回滚；零退出码即成功
+
+  - name: TranscriptPersist
+    package: Storage
+    rules:
+      - content: 自管 ~/.claude/projects/<encoded-cwd>/<sessionId>.jsonl 的追加；server 只读、watch、按物理偏移截断（rewind）

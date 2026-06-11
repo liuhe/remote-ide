@@ -1,0 +1,107 @@
+# Business Model — Overview
+# Detail per entity: ./business-model/<entity>.yaml
+# ER diagram: ./business-model/er.svg (TODO: 待 AI skill 或手画生成)
+
+entities:
+  - name: User
+    summary: 系统的登录主体；name + scrypt 哈希存 ~/.config/remote-ide/users.json
+    detail: ./business-model/user.yaml
+
+  - name: Auth Session
+    summary: 已登录的 cookie 会话；token → {userId, expiresAt}，TTL 60 天，持久化在 sessions.json
+    detail: ./business-model/auth-session.yaml
+
+  - name: Project
+    summary: 用户认领的一个工作目录（绝对路径），是 AI 会话的 cwd 和文件浏览的根
+    detail: ./business-model/project.yaml
+
+  - name: Workspace
+    summary: 用户在某 Project 下打开的 Tab 列表（持久化到 server）；activeProjectId/activeTab 留在浏览器 localStorage
+    detail: ./business-model/workspace.yaml
+
+  - name: Tab
+    summary: Workspace 的一项；type ∈ {file, session, devin}，分别承载文件查看 / Claude 会话 / Devin 会话
+    detail: ./business-model/tab.yaml
+
+  - name: Claude Session
+    summary: 一次 claude CLI 子进程驱动的对话；session_id 是 claude 自己分配的 UUID，jsonl 落盘在 ~/.claude/projects/<encoded-cwd>/<uuid>.jsonl
+    detail: ./business-model/claude-session.yaml
+
+  - name: Devin Session
+    summary: 一次 devin CLI 子进程驱动的对话（ACP JSON-RPC）；sessionId 是 slug，存储由 devin 自管理（SQLite）
+    detail: ./business-model/devin-session.yaml
+
+  - name: Session Transcript
+    summary: Claude 的 jsonl 事实文件；user/assistant 事件流，是 rewind / resume / 历史展示的 source of truth
+    detail: ./business-model/session-transcript.yaml
+
+  - name: File Node
+    summary: Project 根下的目录项或文件；只读浏览，>20MB 拒读，>50MB 拒 raw 服务
+    detail: ./business-model/file-node.yaml
+
+  - name: Settings
+    summary: 用户级偏好（sendKey/theme/fontScale/model/devinModel）；落盘在用户目录 settings.json
+    detail: ./business-model/settings.yaml
+
+  - name: Export Artifact
+    summary: 一次 session 导出的产物；format ∈ {markdown, pdf, png}，PDF/PNG 由 server 跑 puppeteer 渲染
+    detail: ./business-model/export-artifact.yaml
+
+relationships:
+  # 出向关系记在主动方；下面只列跨实体的高频关系作为 overview，完整 relationships 进各实体 detail
+  - source: User
+    kind: composition
+    target: Project
+    cardinality: one-to-many
+    note: 每个用户独立的 projects.json
+  - source: User
+    kind: composition
+    target: Workspace
+    cardinality: one-to-one
+  - source: User
+    kind: composition
+    target: Settings
+    cardinality: one-to-one
+  - source: User
+    kind: composition
+    target: Auth Session
+    cardinality: one-to-many
+  - source: Workspace
+    kind: composition
+    target: Tab
+    cardinality: one-to-many
+    note: 按 projectId 分组
+  - source: Tab
+    kind: associates
+    target: Claude Session
+    cardinality: one-to-one
+    via: resumeId
+    note: type=session 时；resumeId 是 claude session_id
+  - source: Tab
+    kind: associates
+    target: Devin Session
+    cardinality: one-to-one
+    via: resumeId
+    note: type=devin 时
+  - source: Tab
+    kind: associates
+    target: File Node
+    cardinality: one-to-one
+    via: path
+    note: type=file 时
+  - source: Claude Session
+    kind: associates
+    target: Session Transcript
+    cardinality: one-to-one
+    via: jsonlPath
+  - source: Claude Session
+    kind: associates
+    target: Project
+    via: cwd
+    note: cwd 与 Project.path 相同
+  - source: Export Artifact
+    kind: depends-on
+    target: Session Transcript
+    note: 从 transcript 渲染
+
+diagram: ./business-model/er.svg

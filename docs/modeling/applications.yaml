@@ -1,0 +1,95 @@
+# Applications — Overview
+# Detail per application: ./applications/<app>.yaml
+# Topology diagram: ./applications/application-topology.svg (TODO)
+
+applications:
+  - name: web
+    type: frontend
+    tech_stack:
+      language: TypeScript
+      frameworks: [React 19, Vite]
+      libraries: [react-markdown, react-syntax-highlighter]
+    summary: 浏览器 SPA。承载所有页面（登录、Project picker、文件树、Viewer、Chat/Devin panel、Settings、Export dialog）；通过 /api 调 server，通过 /ws 双向流。生产环境由 server 静态托管 dist。
+    detail: ./applications/web.yaml
+
+  - name: server
+    type: backend
+    tech_stack:
+      language: TypeScript
+      runtime: Node.js + tsx
+      frameworks: [Fastify, '@fastify/websocket', '@fastify/cookie', '@fastify/static', '@fastify/compress']
+      storage:
+        - 'JSON files in ~/.config/remote-ide/users/<uid>/{projects,workspace,settings}.json'
+        - 'users.json + sessions.json (auth)'
+      external_dependencies:
+        - 'claude CLI (spawn 子进程，stdio stream-json)'
+        - 'devin CLI (spawn 子进程，stdio ACP JSON-RPC)'
+        - 'Headless Chrome (puppeteer-core，渲染 PDF/PNG 导出)'
+    summary: Fastify HTTP + WebSocket。承担 auth、project/workspace/settings 存取、文件浏览、Claude/Devin 会话桥接（子进程生命周期 + 跨 client 共享）、PDF/PNG 导出渲染、SPA 静态托管。
+    detail: ./applications/server.yaml
+
+  - name: claude-cli
+    type: external
+    tech_stack:
+      implementation: 'Anthropic Claude Code CLI (`claude` binary)'
+    summary: 外部进程。server spawn 它，stdin 喂 stream-json user 事件，stdout 收 stream-json 事件流；事实落盘在 ~/.claude/projects/<encoded-cwd>/<uuid>.jsonl。
+    detail: ./applications/claude-cli.yaml
+
+  - name: devin-cli
+    type: external
+    tech_stack:
+      implementation: 'Cognition Devin CLI（ACP）'
+    summary: 外部进程。ACP JSON-RPC 协议；server 处理 initialize、session/new、session/load、session/prompt、session/request_permission 等 RPC。
+    detail: ./applications/devin-cli.yaml
+
+  - name: headless-chrome
+    type: external
+    tech_stack:
+      implementation: 'Google Chrome / Chromium (host binary)'
+    summary: 外部进程。server 通过 puppeteer-core 启动 + 控制，用来把 ExportView 渲染成 PDF/PNG。每个导出请求冷启动一次（避免长任务串扰）。
+    detail: ./applications/headless-chrome.yaml
+
+application_topology:
+  - from: Developer (browser)
+    to: web
+    label: 加载 SPA + 后续 SPA 路由
+    type: call
+  - from: web
+    to: server
+    label: REST /api/* (auth, projects, workspace, fs, sessions list, export)
+    type: call
+  - from: web
+    to: server
+    label: WebSocket /ws/session (Claude) + /ws/devin (Devin)，stream-json / ACP 双向
+    type: stream
+  - from: server
+    to: claude-cli
+    label: spawn(claude -p --input-format stream-json --output-format stream-json ...)，stdio 流
+    type: call
+    details:
+      - StartClaudeSession
+      - ResumeClaudeSession
+      - RewindMessage
+  - from: server
+    to: devin-cli
+    label: spawn(devin acp ...)，ACP JSON-RPC over stdio
+    type: call
+    details:
+      - StartDevinSession
+      - ResumeDevinSession
+  - from: server
+    to: Host File System
+    label: 读项目目录（FS routes）；读 ~/.claude/projects/<cwd>/*.jsonl（transcript / list / watch）；读写 ~/.config/remote-ide/**
+    type: io
+  - from: server
+    to: headless-chrome
+    label: puppeteer-core 启动 + page.setContent + page.pdf / page.screenshot
+    type: call
+    details:
+      - RenderExport
+  - from: claude-cli
+    to: Host File System
+    label: 自管 transcript（jsonl）落盘；file-history-snapshot 用于 --rewind-files
+    type: io
+
+diagram: ./applications/application-topology.svg

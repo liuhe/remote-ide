@@ -1,0 +1,32 @@
+name: Workspace
+archetype: description
+fields:
+  - userId: "String, 隐式归属（按文件路径分隔）"
+  - projects: "Map<projectId, ProjectWorkspace>，每个 Project 一个 tabs 列表"
+notes: >
+  Workspace 是"用户在每个 Project 下打开了哪些 Tab"的服务端持久状态。
+  全量 GET / 全量 PUT（无单 Tab API）；写入时会被 putWorkspace 规范化成
+  { projects: { [pid]: { tabs: [] } } }，旧字段（activeProjectId / activeTabId）
+  在 server 启动时通过 sanitizeAllWorkspaces 一次性剥离——activeXxx 现存于
+  浏览器 localStorage（per-device）。
+rules:
+  - content: 服务端只存 tabs；activeProjectId 与 activeTabId 不再持久化到 server（按设备区分）
+    related_use_cases:
+      - server.PutWorkspace
+  - content: 启动时 sanitizeAllWorkspaces 扫所有用户目录，剥离 legacy active 字段并重写文件（一次性迁移）
+    related_use_cases:
+      - server.Boot
+  - content: 删除 Project 时同步从 workspace.projects 中移除该 projectId
+    related_use_cases:
+      - server.DeleteProject
+relationships:
+  - kind: associates
+    target: User
+    target_kind: business-entity
+    cardinality: one-to-one
+    note: 主动方是 User（composition）
+  - kind: composition
+    target: Tab
+    target_kind: business-entity
+    cardinality: one-to-many
+    note: 按 projectId 分组的 tabs[]

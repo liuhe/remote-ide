@@ -1,0 +1,35 @@
+name: Project
+archetype: party-place-thing
+fields:
+  - id: "String (uuid), 主键"
+  - name: "String, 显示名（默认 basename(path)，可改）"
+  - path: "String, 绝对路径（已 resolve；输入支持 ~ 前缀）；必须是已存在的目录"
+  - createdAt: "Long (ms epoch)"
+notes: >
+  对应磁盘上一个目录。Project 是 AI 会话 cwd 与文件浏览的根，所有 fs 路径访问通过
+  resolveInProject 强制锁在 path 之下（防 ../ 逃逸）。
+  同一 User 下按 path 去重——重复添加同一路径返回已存在的 Project，不报错。
+  Project 不"拥有"目录的内容，只引用。
+rules:
+  - content: path 必须是已存在的目录（stat 校验 isDirectory），否则添加失败
+    field: path
+    related_use_cases:
+      - server.AddProject
+  - content: 同一 User 同一 path 去重——返回已存在 Project，不创建新记录
+    field: path
+    related_use_cases:
+      - server.AddProject
+  - content: 删除 Project 时同步删除对应 ProjectWorkspace（tabs）；不删用户的 ~/.claude/projects/<encoded-cwd>/ jsonl 文件（那是 claude 自管）
+    related_use_cases:
+      - server.DeleteProject
+relationships:
+  - kind: associates
+    target: User
+    target_kind: business-entity
+    cardinality: many-to-one
+    note: 持有方是 User（composition）；此处记反向关联留作 reference
+  - kind: composition
+    target: File Node
+    target_kind: business-entity
+    cardinality: one-to-many
+    note: 项目根下的目录/文件树（只读浏览）

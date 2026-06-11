@@ -1,0 +1,38 @@
+name: File Node
+archetype: party-place-thing
+fields:
+  - path: "String, 相对 Project.path 的相对路径（/api 与 /raw 路由约束在 root 之下）"
+  - name: "String, basename(path)"
+  - isDir: "Boolean"
+  - size: "Long (bytes, files only)"
+  - mime: "String (files only), mime-types.lookup() 推断"
+notes: >
+  Project 根下的目录项或文件。系统是只读的——没有创建 / 写入 / 删除路径。
+  路径解析由 resolveInProject 强制锁在 root 下（path.resolve 后必须等于 root
+  或以 root + sep 开头），否则拒绝以防 ../ 逃逸。
+rules:
+  - content: 列目录时过滤 dotfiles（以 . 开头的条目）
+    related_use_cases:
+      - server.ListDir
+  - content: 列目录后排序：目录在前，名字字母序
+    related_use_cases:
+      - server.ListDir
+  - content: 单文件读取上限 20MB，>20MB 返回 413
+    related_use_cases:
+      - server.ReadFile
+  - content: /raw 路由上限 50MB（相对 HTML 资源加载场景，体积可比 viewer 略大）；同样 413
+    related_use_cases:
+      - server.ServeRawFile
+  - content: /api/fs/file 与 /raw 都设 Cache-Control no-store，避免浏览器缓存"看起来旧"的远程文件
+    related_use_cases:
+      - server.ReadFile
+      - server.ServeRawFile
+  - content: /raw 是 path 编码（不是 querystring），让浏览器内 HTML 的相对资源（<link href="./style.css">）自然解析到同一前缀下
+    related_use_cases:
+      - server.ServeRawFile
+relationships:
+  - kind: associates
+    target: Project
+    target_kind: business-entity
+    cardinality: many-to-one
+    note: 主动方是 Project（composition）

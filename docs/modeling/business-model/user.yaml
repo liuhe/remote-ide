@@ -1,0 +1,42 @@
+name: User
+archetype: party-place-thing
+fields:
+  - id: "String (uuid), 主键，每个 User 的稳定标识；持久化在 ~/.config/remote-ide/users.json"
+  - name: "String, 唯一用户名（大小写不敏感比较），正则 [A-Za-z0-9_-]+，登录与目录名都用它"
+  - passwordHash: "Hex String, scrypt(password, salt, N=2^14, r=8, p=1, keylen=32)，不可逆"
+  - salt: "Hex String (16 bytes), 每个用户独立的盐"
+  - createdAt: "Long (ms epoch), 创建时间"
+notes: >
+  系统的登录主体。multi-user 模式下每个 User 在 ~/.config/remote-ide/users/<id>/
+  下独立持有 projects.json / workspace.json / settings.json，互不可见。
+  新增 User 仅靠 server CLI（`pnpm --filter server adduser <name>`），暂无 UI。
+rules:
+  - content: name 必须满足 ^[A-Za-z0-9_-]+$，名称比较大小写不敏感
+    field: name
+    related_use_cases:
+      - server.AddUser
+  - content: 密码长度 >=6；旧 password 替换时重新生成 salt
+    field: passwordHash
+    related_use_cases:
+      - server.AddUser
+  - content: scrypt 参数选定 N=2^14（保证单次校验 ~25ms，且在 Node 默认 32MB scrypt 内存限内）；不再上调以避免显式 maxmem
+    field: passwordHash
+relationships:
+  - kind: composition
+    target: Project
+    target_kind: business-entity
+    cardinality: one-to-many
+    note: 每个 User 独立的 projects.json
+  - kind: composition
+    target: Workspace
+    target_kind: business-entity
+    cardinality: one-to-one
+  - kind: composition
+    target: Settings
+    target_kind: business-entity
+    cardinality: one-to-one
+  - kind: composition
+    target: Auth Session
+    target_kind: business-entity
+    cardinality: one-to-many
+    note: 一个用户可同时有多个活跃 cookie（不同设备）

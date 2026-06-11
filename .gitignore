@@ -1,0 +1,9 @@
+node_modules
+dist
+.DS_Store
+*.log
+*.tsbuildinfo
+.env
+.claude_global
+.claude/settings.local.json
+docs/modeling/static/

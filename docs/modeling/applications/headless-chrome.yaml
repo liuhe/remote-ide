@@ -1,0 +1,24 @@
+name: headless-chrome
+type: external
+tech_stack:
+  implementation: Google Chrome / Chromium（宿主机已装的二进制；puppeteer-core 不下载）
+notes: >
+  仅 Export 路径用到：server 通过 puppeteer-core 控制宿主 Chrome 把 ExportView outerHTML
+  渲染成 PDF / PNG，立即下载，不长期持有。每次请求冷启动一个 Browser（避免长任务串扰），
+  finally 关闭。
+
+use_cases:
+  - name: RenderPdfPage
+    package: Render
+    actor: server
+    rules:
+      - content: 启动参数：--no-sandbox --disable-setuid-sandbox --disable-dev-shm-usage --disable-gpu --disable-extensions --no-first-run --disable-background-timer-throttling
+      - content: page.setContent(html, waitUntil:'load')；document.fonts.ready 阻塞一帧避免缺字渲染
+      - content: A4 纸张 + 12mm 边距 + printBackground:true
+
+  - name: RenderPngPage
+    package: Render
+    actor: server
+    rules:
+      - content: 短页（≤2000 CSS px）直接 fullPage screenshot，deviceScaleFactor=2 提清晰度
+      - content: 长页：viewport 切到 PNG_SLICE_HEIGHT(2000) 高、deviceScaleFactor=2，逐段 scrollTo + screenshot，clientHeight 不变；最后 sharp.composite 拼接成 width*DSF × height*DSF 大图

@@ -1,0 +1,276 @@
+name: web
+type: frontend
+tech_stack:
+  language: TypeScript
+  frameworks: [React 19, Vite]
+  libraries: [react-markdown, react-syntax-highlighter]
+infrastructure:
+  - name: localStorage
+    type: browser-storage
+    description: 存 per-device 的 activeProjectId / activeTabId / PWA 安装状态等 ephemeral 偏好
+  - name: PWA
+    type: capability
+    description: usePwaInstall 钩子检测可装并提示；主要服务移动端 Add to Home
+
+use_cases:
+  # ─── Auth ────────────────────────────────────────
+  - name: Login
+    package: Auth
+    actor: Developer
+    rules:
+      - content: 启动期拉 /api/auth/status；required && !authenticated 时渲染 Login 组件，否则进主界面
+      - content: 表单提交走 /api/auth/login；失败显示统一错误，不暴露 username 是否存在
+    associations:
+      - relation: Include
+        application: server
+        name: AuthStatus
+      - relation: Include
+        application: server
+        name: Login
+
+  - name: Logout
+    package: Auth
+    actor: Developer
+    rules:
+      - content: Settings 面板里调用 /api/auth/logout，成功后重置应用状态回到登录页
+    associations:
+      - relation: Include
+        application: server
+        name: Logout
+
+  # ─── Project & Workspace ─────────────────────────
+  - name: ProjectPicker
+    package: Project & Workspace
+    actor: Developer
+    rules:
+      - content: 列出当前用户的 projects；点击切换 activeProjectId（写 localStorage）
+    associations:
+      - relation: Include
+        application: server
+        name: ListProjects
+
+  - name: AddProject
+    package: Project & Workspace
+    actor: Developer
+    rules:
+      - content: 表单输入 path（支持 ~）+ 可选 name；调用 /api/projects POST
+    associations:
+      - relation: Include
+        application: server
+        name: AddProject
+
+  - name: DeleteProject
+    package: Project & Workspace
+    actor: Developer
+    associations:
+      - relation: Include
+        application: server
+        name: DeleteProject
+
+  - name: OpenTab
+    package: Project & Workspace
+    actor: Developer
+    rules:
+      - content: 文件树 / 历史会话面板点击都映射到"开 Tab"——内部修改 workspace.projects[pid].tabs，去重并切到该 Tab
+      - content: 关 Tab 即从 tabs[] 删除；为会话 Tab 还会关掉对应 WS
+
+  - name: CloseTab
+    package: Project & Workspace
+    actor: Developer
+
+  - name: PersistWorkspace
+    package: Project & Workspace
+    actor: Developer
+    rules:
+      - content: tabs 变化（debounce 后）整份 PUT /api/workspace；不细粒度
+    associations:
+      - relation: Include
+        application: server
+        name: PutWorkspace
+
+  # ─── File Browse ─────────────────────────────────
+  - name: FileTree
+    package: File Browse
+    actor: Developer
+    rules:
+      - content: 树形浏览，懒加载子目录；点击文件 → OpenTab(type=file)
+    associations:
+      - relation: Include
+        application: server
+        name: ListDir
+
+  - name: Viewer
+    package: File Browse
+    actor: Developer
+    rules:
+      - content: 根据 mime 选择 renderer：markdown / 代码高亮 / 图片 / PDF 内嵌 / 音视频 / HTML iframe（HTML 用 /raw 路径加载以保留相对引用）
+    associations:
+      - relation: Include
+        application: server
+        name: ReadFile
+      - relation: Include
+        application: server
+        name: StatFile
+
+  # ─── Claude Session ──────────────────────────────
+  - name: SessionPicker
+    package: Claude Session
+    actor: Developer
+    rules:
+      - content: 列出当前 Project 下历史会话（按 mtime 倒序）；点击 → OpenTab(type=session, resumeId=...)
+    associations:
+      - relation: Include
+        application: server
+        name: ListSessions
+
+  - name: ChatPanel
+    package: Claude Session
+    actor: Developer
+    rules:
+      - content: 打开 Tab 时连 WS /ws/session?project=&resume=；收到 started 帧后渲染状态
+      - content: 分页拉历史 transcript（上滑加载更多）
+      - content: stream-json 事件流增量渲染 user / assistant 块；含工具调用块（折叠展示）、图片 base64 内嵌
+      - content: thinking 状态显示 spinner；result 后切回空闲
+    associations:
+      - relation: Include
+        application: server
+        name: ReadTranscript
+      - relation: Include
+        application: server
+        name: ClaudeSessionBridge
+
+  - name: SendPrompt
+    package: Claude Session
+    actor: Developer
+    rules:
+      - content: 同一 UI 入口，根据当前 Tab.type 走 Claude（{type:user, text, images}）或 Devin（session/prompt RPC）
+      - content: 用 settings.sendKey 决定提交键（enter / cmd-enter / shift-enter）
+      - content: 给消息生成本地 msgId 透传给后端，后端 flush 后回 user_uuid 帮 UI 启用 rewind ✎
+    associations:
+      - relation: Include
+        application: server
+        name: ClaudeSessionBridge
+      - relation: Include
+        application: server
+        name: DevinSessionBridge
+
+  - name: SwitchModel
+    package: Claude Session
+    actor: Developer
+    rules:
+      - content: Claude：WS 发 {type:set_model, model}；Devin：发 session/set_mode RPC
+    associations:
+      - relation: Include
+        application: server
+        name: ClaudeSessionBridge
+      - relation: Include
+        application: server
+        name: DevinSessionBridge
+
+  - name: StopGeneration
+    package: Claude Session
+    actor: Developer
+    rules:
+      - content: WS 发 {type:stop}；result 事件 terminal_reason=aborted_streaming 后 UI 复位
+    associations:
+      - relation: Include
+        application: server
+        name: ClaudeSessionBridge
+
+  - name: RewindMessage
+    package: Claude Session
+    actor: Developer
+    rules:
+      - content: 编辑历史 user 消息后调用 /api/projects/:id/sessions/:sid/rewind；成功后等 server 广播 rewind 再 refetch transcript
+      - content: ✎ 按钮只在 server 已回 user_uuid 后启用
+    associations:
+      - relation: Include
+        application: server
+        name: RewindSession
+
+  # ─── Devin Session ───────────────────────────────
+  - name: DevinPanel
+    package: Devin Session
+    actor: Developer
+    rules:
+      - content: 与 ChatPanel 平行的 UI，渲染 ACP 通知（plan / tool / message）
+    associations:
+      - relation: Include
+        application: server
+        name: DevinSessionBridge
+
+  - name: PermissionPrompt
+    package: Devin Session
+    actor: Developer
+    rules:
+      - content: server 转发 session/request_permission 时弹确认框；用户选项回传作为 RPC 响应；不回答会在 5 分钟后被 server 代答 reject
+
+  # ─── Export ──────────────────────────────────────
+  - name: ExportDialog
+    package: Export
+    actor: Developer
+    rules:
+      - content: 选 format（markdown / pdf / png）+ 可选 filename
+      - content: markdown 走前端就地生成下载（不走 server）
+      - content: pdf / png 把 ExportView 的 outerHTML（已内联工具块 + base64 图）POST 给 /api/projects/:id/export，下载返回的 buffer
+      - content: lazy-load ExportDialog 与 ExportView，首屏不打包
+    associations:
+      - relation: Include
+        application: server
+        name: RenderExport
+
+  # ─── Settings ────────────────────────────────────
+  - name: Settings
+    package: Settings
+    actor: Developer
+    rules:
+      - content: 修改 sendKey / theme / fontScale / model / devinModel；PUT /api/settings 落盘
+      - content: 主题与字号通过 data-theme / data-font-scale 切换 CSS 变量
+    associations:
+      - relation: Include
+        application: server
+        name: GetSettings
+      - relation: Include
+        application: server
+        name: PutSettings
+
+pages:
+  - name: LoginPage
+    related_use_cases: [Login]
+    display_mappings:
+      - 用户名 / 密码表单；错误统一 "invalid credentials"
+
+  - name: MainShell
+    related_use_cases:
+      - ProjectPicker
+      - OpenTab
+      - CloseTab
+      - PersistWorkspace
+    display_mappings:
+      - 三栏（移动端折叠）：左侧 Project & Tab 列表，中部 Viewer/ChatPanel/DevinPanel，右侧（可选）Settings
+
+  - name: FileViewerView
+    related_use_cases: [FileTree, Viewer]
+    display_mappings:
+      - 文件树懒加载；选中文件按 mime 选渲染器
+
+  - name: ChatView
+    related_use_cases: [ChatPanel, SendPrompt, SwitchModel, StopGeneration, RewindMessage, SessionPicker]
+    display_mappings:
+      - 顶部模型 chip + 中止 / 重连按钮
+      - 中部流式消息列表，工具调用块可折叠
+      - 底部输入框（支持图片粘贴 / 选择）；sendKey 由 settings 决定
+
+  - name: DevinView
+    related_use_cases: [DevinPanel, SendPrompt, SwitchModel, PermissionPrompt]
+    display_mappings:
+      - 与 ChatView 平行；plan / tool 块按 ACP 通知类型渲染
+      - 权限请求弹层（带剩余倒计时提示）
+
+  - name: ExportSheet
+    related_use_cases: [ExportDialog]
+    display_mappings:
+      - format 选择；调用后显示进度，下载完成自动关闭
+
+  - name: SettingsPane
+    related_use_cases: [Settings, Logout]

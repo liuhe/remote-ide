@@ -1,0 +1,373 @@
+name: server
+type: backend
+tech_stack:
+  language: TypeScript
+  runtime: Node.js + tsx
+  frameworks: [Fastify, '@fastify/websocket', '@fastify/cookie', '@fastify/static', '@fastify/compress', '@fastify/cors']
+  storage:
+    - 'JSON files in ~/.config/remote-ide/{users.json, sessions.json, users/<uid>/{projects,workspace,settings}.json}'
+  external_dependencies:
+    - claude-cli (spawn 子进程，stream-json over stdio)
+    - devin-cli (spawn 子进程，ACP JSON-RPC over stdio)
+    - headless-chrome (puppeteer-core 启动 Chrome 二进制做 PDF/PNG)
+
+infrastructure:
+  - name: ~/.config/remote-ide/
+    type: filesystem
+    description: 服务自管的 JSON 存储；users.json、sessions.json、users/<uid>/{projects,workspace,settings}.json
+  - name: ~/.claude/projects/<encoded-cwd>/
+    type: filesystem
+    description: claude CLI 自管的 jsonl 目录；server 只读 + watch + 按物理偏移 truncate（rewind）
+  - name: launchd
+    type: process-manager
+    description: 进程托管器；plist 在 ~/Library/LaunchAgents/com.eric.remote-ide.plist；日志到 ~/Library/Logs/remote-ide.{log,err}
+
+use_cases:
+  # ─── Boot / 守护性 ───────────────────────────────
+  - name: Boot
+    package: Lifecycle
+    rules:
+      - content: 加载 .env（先 cwd 后 ../）；不覆盖已有 process.env
+      - content: 跑 migrateLegacyIfNeeded —— 若存在旧单用户 projects.json 且尚无 users.json，以 REMOTE_IDE_PASSWORD 创建 user "eric" 并迁移文件；密码缺失或 <6 报错拒启
+      - content: 跑 sanitizeAllWorkspaces 一次性剥离 legacy activeProjectId/activeTabId 字段并重写文件
+      - content: 注册 unhandledRejection log 兜底；puppeteer CDP 断连会喷一波 pending callback，必须不让它打挂 Node
+      - content: 若 web/dist 存在则启用 @fastify/static 托管 SPA（assets/* 长缓存；index.html no-cache）；404 命中 /api/ /ws/ /raw/ 之外的请求时回退 index.html（SPA 路由）
+
+  - name: AuthGate
+    package: Auth
+    rules:
+      - content: onRequest 钩子：除 /api/auth/* 与 /api/health 外，/api/* 、/ws/* 、/raw/* 全部需要有效 cookie
+      - content: 未配置任何 User 时 503 提示"运行 adduser"
+      - content: 30s 一次后台刷新 anyUserCached（让 adduser 期间运行不需重启）
+
+  - name: Login
+    package: Auth
+    actor: web
+    api:
+      - 'POST /api/auth/login {username, password}'
+    rules:
+      - content: 错误统一 "invalid credentials"，不区分用户不存在与密码错（防枚举）
+      - content: 成功生成 32 字节随机 token，写 sessions[token]={userId, expiresAt=now+60d}；setCookie HttpOnly + SameSite=Lax + path=/
+      - content: scrypt verify 用 timingSafeEqual
+
+  - name: Logout
+    package: Auth
+    actor: web
+    api:
+      - 'POST /api/auth/logout'
+    rules:
+      - content: 删 sessions[token] 并 clearCookie
+
+  - name: AuthStatus
+    package: Auth
+    actor: web
+    api:
+      - 'GET /api/auth/status'
+    rules:
+      - content: 返回 {required, authenticated, configured, username}；前端启动拉一次决定走登录页还是主界面
+
+  - name: AddUser
+    package: Auth
+    actor: Operator
+    api:
+      - 'CLI: pnpm --filter server adduser <name>'
+    rules:
+      - content: 校验 name 正则 [A-Za-z0-9_-]+；密码 >=6；scrypt 生成 salt + hash 写 users.json
+
+  # ─── Project & Workspace ─────────────────────────
+  - name: ListProjects
+    package: Project & Workspace
+    actor: web
+    api: ['GET /api/projects']
+
+  - name: AddProject
+    package: Project & Workspace
+    actor: web
+    api: ['POST /api/projects {path, name?}']
+    rules:
+      - content: path 输入支持 ~ 前缀，resolve 后必须 isDirectory；按 path 在用户名下去重（已存在则返回，不报错）
+
+  - name: DeleteProject
+    package: Project & Workspace
+    actor: web
+    api: ['DELETE /api/projects/:id']
+    rules:
+      - content: 删 project 同时从 workspace.projects 中剔除对应 projectId
+
+  - name: GetWorkspace
+    package: Project & Workspace
+    actor: web
+    api: ['GET /api/workspace']
+    rules:
+      - content: 读盘后规范化 shape；丢弃 legacy activeXxx 字段
+
+  - name: PutWorkspace
+    package: Project & Workspace
+    actor: web
+    api: ['PUT /api/workspace']
+    rules:
+      - content: 规范化为 { projects: { [pid]: { tabs } } }；不接受 activeXxx 字段
+
+  - name: GetSettings
+    package: Settings
+    actor: web
+    api: ['GET /api/settings']
+
+  - name: PutSettings
+    package: Settings
+    actor: web
+    api: ['PUT /api/settings']
+    rules:
+      - content: 写入前与 DEFAULT_SETTINGS 浅合并
+
+  # ─── File ────────────────────────────────────────
+  - name: ListDir
+    package: File
+    actor: web
+    api: ['GET /api/fs/list?project=<id>&path=<rel>']
+    rules:
+      - content: resolveInProject 强制路径锁在 root 下；不允许 ../ 逃逸
+      - content: 过滤 dotfiles；目录在前，名字 localeCompare 排序
+
+  - name: ReadFile
+    package: File
+    actor: web
+    api: ['GET /api/fs/file?project=<id>&path=<rel>']
+    rules:
+      - content: >20MB 拒；mime-types 推断后 Content-Type + Content-Length + no-store
+
+  - name: StatFile
+    package: File
+    actor: web
+    api: ['GET /api/fs/stat?project=<id>&path=<rel>']
+
+  - name: ServeRawFile
+    package: File
+    actor: web
+    api: ['GET /raw/:projectId/*']
+    rules:
+      - content: 用 path 编码（不是 querystring）让 HTML 相对资源解析自然；50MB 上限
+
+  # ─── Claude Session ──────────────────────────────
+  - name: ListSessions
+    package: Claude Session
+    actor: web
+    api: ['GET /api/projects/:id/sessions']
+    rules:
+      - content: 扫 ~/.claude/projects/<encoded-cwd>/ 的所有 .jsonl；按 mtime 倒序
+      - content: 取每个 jsonl 头 64KB 找首条 user 消息，preview ≤120 字符
+
+  - name: ReadTranscript
+    package: Claude Session
+    actor: web
+    api: ['GET /api/projects/:id/sessions/:uuid/transcript?limit&before']
+    rules:
+      - content: 只保留 type ∈ {user, assistant} 的行；limit 上限 500；分页返回 events + startIndex/endIndex/total
+
+  - name: ClaudeSessionBridge
+    package: Claude Session
+    actor: web
+    api: ['WS /ws/session?project=<id>&resume=<sid>']
+    rules:
+      - content: '①带 resume 且已 live → attach 到现有 SessionEntry，回送 started{attached:true,thinking,model}'
+      - content: '②否则 spawn(claude) 并按 resumeId（如有）回放；预注册到 byResumeId 防并发重 spawn'
+      - content: 消息协议（client→server）：{type:user, text, images[], msgId}、{type:set_model, model}、{type:stop}、{type:ping}
+      - content: '消息协议（server→client）：started、event(stream-json)、stderr、user_uuid(msgId→jsonl uuid 映射)、external_change、rewind、exit、error、pong'
+      - content: 用户提交 prompt 时立刻给其它 client 广播 user 事件并写 stdin；异步 wait jsonl flush 后广播 user_uuid，使 rewind ✎ 按钮可立即出现
+      - content: 30s WS 心跳；pong 未回即 terminate
+      - content: 客户端清空后启动 5 分钟 grace；attach 取消；thinking==true 时即使到期也续期到下个 result
+    associations:
+      - relation: Include
+        application: claude-cli
+        name: StreamJsonDialog
+
+  - name: WatchJsonl
+    package: Claude Session
+    actor: claude-cli
+    rules:
+      - content: 仅在已知 resumeId 后启动；fs.watch 失败则 1s 重试
+      - content: 自上次 selfWrite/userInput 不足 30s 视为我方活动期，忽略；超出且未通知则 400ms 后广播 external_change
+      - content: client 任何活动重置 externalNotified 标记
+
+  - name: RewindSession
+    package: Claude Session
+    actor: web
+    api: ['POST /api/projects/:id/sessions/:sid/rewind {messageUuid, newText, images?}']
+    rules:
+      - content: 必须 sid 已 live（byResumeId 命中），否则 409；目的是让 watcher + clients 都还连着
+      - content: 顺序：kill 老子进程 → claude --rewind-files <uuid> 回滚文件 → 物理 truncate jsonl 到该行 → spawn 新子进程 resume → 写新 prompt → wait flush → 广播 rewind
+      - content: 任意一步失败必须 recoverWithoutRewind：起一个干净的 resume 子进程接回 entry.proc，否则 WS 客户端拿到僵尸进程；返回对应 4xx/5xx
+      - content: kill 老进程前移除 exit/error listeners，避免广播给 client（client 不应感知到进程被换）
+    associations:
+      - relation: Include
+        application: claude-cli
+        name: RewindFiles
+
+  # ─── Devin Session ───────────────────────────────
+  - name: DevinSessionBridge
+    package: Devin Session
+    actor: web
+    api: ['WS /ws/devin?project=<id>&resume=<sid>']
+    rules:
+      - content: 与 ClaudeSessionBridge 完全独立的代码路径（防一边坏拖垮另一边）
+      - content: initialize 未完成期间，client 请求暂存 pendingClientReqs；返回后逐条转发
+      - content: agent→client RPC：仅 session/request_permission 转发；fs/* 与 terminal/* 一律就地拒绝
+      - content: 权限提示 5 分钟无响应代答 reject
+      - content: 缓存 currentModeId / configOptions / promptPending 让重 attach 的 client 无需等下一帧
+    associations:
+      - relation: Include
+        application: devin-cli
+        name: AcpDialog
+
+  # ─── Export ──────────────────────────────────────
+  - name: RenderExport
+    package: Export
+    actor: web
+    api: ['POST /api/projects/:id/export {html, theme, fontScale, format, filename?}']
+    rules:
+      - content: bodyLimit 64MB（含 base64 图片）
+      - content: 解析 CHROME_EXECUTABLE 或自动发现（mac /Applications/Google Chrome.app/...；linux /usr/bin/{google-chrome,chromium,...}）；找不到抛
+      - content: 每次冷启动一个 Browser（避免长任务串扰）；finally close()
+      - content: 注入 bundle 内嵌 CSS（从 web/dist/assets/ 选最大的 .css），按 mtime 缓存一份
+      - content: 显式追加 CJK 字体 fallback，避免 headless Chrome 渲方块
+      - content: PDF 走 page.pdf(A4, 12mm 边距, printBackground:true)
+      - content: PNG 短页 deviceScaleFactor=2 一次 fullPage 截；长页 (>2000px) 切片 viewport 滚动截图再 sharp.composite 拼接
+
+# === DDD 应用领域模型 ===
+domain_model:
+
+  roles:
+    - name: SessionBridge
+      methods:
+        - 'attach(socket): 把 WebSocket 加入既有 SessionEntry 的 clients'
+        - 'spawn(cwd, resume?, model?): 起 CLI 子进程并 wire stdio'
+        - 'broadcast(msg, exceptSocket?): 给 clients 广播'
+        - 'scheduleKillIfIdle(): clients 清空后排期 grace kill'
+      notes: Claude 与 Devin 两套 bridge 都满足这套契约，但实现完全独立、不共享代码
+
+  aggregates:
+    - name: SessionEntryAggregate
+      root: SessionEntry
+      entities:
+        - name: SessionEntry
+          fields:
+            - proc: 'ChildProcessWithoutNullStreams'
+            - cwd: 'String'
+            - resumeId: 'String | null'
+            - clients: 'Set<WebSocket>'
+            - thinking / promptPending: 'Boolean'
+            - model / currentModeId: 'String | null'
+            - watcher: 'fs.FSWatcher? (仅 Claude)'
+            - killTimer: 'NodeJS.Timeout?'
+            - lastSelfWrite / lastInput / externalNotified: '(仅 Claude，用于 jsonl 外部变化判定)'
+            - pendingClientReqs / pendingAgentRpcs / rpcSeq / initialized: '(仅 Devin)'
+      invariants:
+        - resumeId 落定后必须出现在对应注册表（byResumeId / bySessionId）
+        - 任意时刻 entry.proc 必须是 live 进程；rewind 等替换过程中必须先恢复才允许返回响应
+        - thinking==true 时不被 idle grace kill
+      notes: |-
+        SessionEntry 不持久化——是运行时状态。重启后所有进程被 launchd 一起拉起，
+        但 in-memory 注册表清零；客户端用 resumeId 重新 attach 即会触发新 spawn 接续到 jsonl。
+      relationships:
+        - kind: implements
+          target: Claude Session
+          target_kind: business-entity
+          note: Claude 版本
+        - kind: implements
+          target: Devin Session
+          target_kind: business-entity
+          note: Devin 版本
+        - kind: implements
+          target: SessionBridge
+          target_kind: role
+
+    - name: UserAggregate
+      root: User
+      entities:
+        - name: User
+          fields:
+            - id: 'String (uuid)'
+            - name: 'String'
+            - passwordHash: 'Hex String'
+            - salt: 'Hex String'
+            - createdAt: 'Long'
+      invariants:
+        - name 唯一（大小写不敏感）
+        - 任意时刻 passwordHash 与 salt 配对一致；改密时同步替换
+      relationships:
+        - kind: implements
+          target: User
+          target_kind: business-entity
+
+  value_objects:
+    - name: ProjectWorkspace
+      fields:
+        - tabs: 'Tab[]'
+    - name: Workspace
+      fields:
+        - projects: 'Record<projectId, ProjectWorkspace>'
+    - name: Tab
+      fields:
+        - id / type / path / resumeId / title: '...'
+    - name: Settings
+      fields:
+        - sendKey / theme / fontScale / model / devinModel: '...'
+
+  repositories:
+    - name: UserStore
+      operations: [listUsers, findUserByName, findUserById, addUser, removeUser, setPassword, ensureUser]
+      notes: 文件后端 ~/.config/remote-ide/users.json
+      relationships:
+        - kind: composition
+          target: UserAggregate
+          target_kind: aggregate
+    - name: AuthSessionStore
+      operations: [load, persist (debounce 250ms), userIdForToken, set, delete]
+      notes: 文件后端 ~/.config/remote-ide/sessions.json
+    - name: ProjectStore
+      operations: [listProjects, addProject, deleteProject, getProject]
+      notes: per-user ~/.config/remote-ide/users/<uid>/projects.json
+    - name: WorkspaceStore
+      operations: [getWorkspace, putWorkspace, sanitizeAllWorkspaces]
+      notes: per-user workspace.json；启动期一次性 sanitize
+    - name: SettingsStore
+      operations: [getSettings, putSettings]
+      notes: per-user settings.json，浅合并 DEFAULT_SETTINGS
+    - name: SessionRegistry
+      operations: [byResumeId.get/set/delete (Claude), bySessionId.get/set/delete (Devin), pending.add/delete]
+      notes: 纯内存 Map；进程退出时清理
+      relationships:
+        - kind: composition
+          target: SessionEntryAggregate
+          target_kind: aggregate
+
+  domain_services:
+    - name: ChromeLauncher
+      operations:
+        - 'resolveChromePath(): 按 env / 平台默认找 Chrome'
+        - 'launchBrowser(): 每次冷启动一个 puppeteer Browser'
+      notes: 与 Export Artifact 渲染绑定
+    - name: PageRenderer
+      operations:
+        - 'renderExport(opts): pdf 或 png；png 长页切片走 sharp 拼接'
+      notes: 持有页面 HTML 构造与 CJK 字体注入逻辑
+    - name: TranscriptScanner
+      operations:
+        - 'peekRecentModel(cwd): 取最近 jsonl 里最新 assistant.message.model 作为前端 spawn 时的 hint'
+        - 'waitForUserRecordFlushed(file, text, timeoutMs): 等 claude 把刚发的 user 行 flush 到 jsonl'
+        - 'truncateTranscriptAt(file, uuid): 物理偏移截断到指定 user 行'
+      notes: 用于 RewindSession / ClaudeSessionBridge.user_uuid 广播
+
+  domain_events:
+    - name: SessionStarted
+      published_when: WS attach 或 spawn 后首个 started 帧发出
+      payload: { sessionId, cwd, resumed, attached, clients, thinking, model }
+    - name: ExternalSessionChange
+      published_when: jsonl 在我方静默期被外部进程改写
+      payload: { sessionId }
+    - name: SessionRewound
+      published_when: RewindSession 成功完成、新 prompt 已 flush
+      payload: '{}'
+    - name: SessionExited
+      published_when: 子进程 exit
+      payload: { code }

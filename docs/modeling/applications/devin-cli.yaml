@@ -1,0 +1,21 @@
+name: devin-cli
+type: external
+tech_stack:
+  implementation: Cognition Devin CLI（ACP — Agent Client Protocol）
+notes: >
+  外部进程。server spawn 后通过 stdio 跑 JSON-RPC（ACP）。session.ts 与 devin.ts
+  刻意零共享，避免一边 bug 拖垮另一边。Devin 内部自管持久化（SQLite）；server 不直接读写。
+
+use_cases:
+  - name: AcpDialog
+    package: Dialog
+    actor: server
+    rules:
+      - content: 标准 ACP 消息：initialize / session/new / session/load / session/prompt / session/cancel / session/set_mode / agent 反向 fs/* + terminal/* + session/request_permission
+      - content: server 对 fs/* 与 terminal/* 一律就地拒绝（不暴露宿主能力）；只把 session/request_permission 转发给 client
+      - content: 初始化期间所有 client 请求暂存，待 initialize 响应回来后逐条转发
+
+  - name: SessionPersist
+    package: Storage
+    rules:
+      - content: Devin 自管 SQLite；server 不直接接触持久化层，仅靠 sessionId（slug）resume

@@ -1,0 +1,43 @@
+name: Tab
+archetype: description
+fields:
+  - id: "String, 在所属 ProjectWorkspace.tabs 内唯一"
+  - type: "Enum { file | session | devin }"
+  - path: "String (when type=file), 项目内的相对路径"
+  - resumeId: "String? (when type ∈ {session, devin}), 关联到 Claude Session.sessionId 或 Devin Session.sessionId；新开会话时为空，spawn 后由 init 事件回填"
+  - title: "String? (when type ∈ {session, devin}), 用户可改的显示名"
+notes: >
+  Tab 是 Workspace 里的一项，区分三种类型，分别承载文件查看、Claude 会话、Devin 会话。
+  关 Tab 在 server 侧不直接杀进程——会话进程的生命周期是基于 WS 客户端是否还在
+  attached（详见 Claude Session / Devin Session）；前端关 Tab 即关 WS。
+rules:
+  - content: 同一 ProjectWorkspace.tabs 内 id 唯一
+    field: id
+  - content: type=file 必有 path；type ∈ {session, devin} 时 resumeId 起初可空，spawn 后由 server 回填到下次 PUT
+    related_use_cases:
+      - server.PutWorkspace
+      - server.ClaudeSessionBridge
+      - server.DevinSessionBridge
+  - content: 关 Tab → 前端关闭 WS → server 进 CLIENT_DRAIN_GRACE_MS（5 分钟）的延迟杀进程逻辑（refresh / 重连可恢复）
+    related_use_cases:
+      - server.ClaudeSessionBridge
+      - server.DevinSessionBridge
+relationships:
+  - kind: associates
+    target: File Node
+    target_kind: business-entity
+    cardinality: one-to-one
+    via: path
+    note: type=file 时
+  - kind: associates
+    target: Claude Session
+    target_kind: business-entity
+    cardinality: one-to-one
+    via: resumeId
+    note: type=session 时
+  - kind: associates
+    target: Devin Session
+    target_kind: business-entity
+    cardinality: one-to-one
+    via: resumeId
+    note: type=devin 时

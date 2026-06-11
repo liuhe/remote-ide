@@ -1,0 +1,80 @@
+name: Claude Session
+archetype: moment-interval
+fields:
+  - sessionId: "String (uuid), 由 claude CLI 在第一条 `system.init` 事件中分配；Tab.resumeId 即此值"
+  - cwd: "String, 等同于关联 Project.path；spawn(claude) 的工作目录"
+  - model: "String?, 来自最近一次 system.init.model；用于客户端 UI 显示"
+  - jsonlPath: "String (derived), ~/.claude/projects/<encoded-cwd>/<sessionId>.jsonl；encodeCwd 把 / 替换为 -"
+  - thinking: "Boolean (runtime only), 用户已发 prompt 但还没收到 result"
+  - clients: "Set<WebSocket> (runtime only), 当前 attached 的 WS 客户端集合"
+notes: >
+  一次 claude CLI 子进程驱动的对话；进程参数固定：
+    claude -p --input-format stream-json --output-format stream-json
+           --verbose --include-partial-messages --dangerously-skip-permissions
+           [--model <model>] [--resume <sessionId>]
+  环境强制设 CLAUDE_CODE_ENABLE_SDK_FILE_CHECKPOINTING=1，让非交互模式也写
+  file-history-snapshot（这是 --rewind-files 的前提）。
+  事实落盘在 jsonlPath；server 只读它，不写。多个 WS 客户端通过 byResumeId 映射
+  共享同一个 SessionEntry（同一个子进程）。
+state_machine:
+  field: lifecycle
+  states: [Spawning, Live, Thinking, IdleDraining, Killed]
+  transitions:
+    - from: Spawning
+      to: Live
+      trigger: 收到首个 system.init 事件，sessionId 落定
+    - from: Live
+      to: Thinking
+      trigger: 收到任一 client 的 user 消息（或 rewind 触发的下一条 prompt）
+    - from: Thinking
+      to: Live
+      trigger: 收到 result 事件
+    - from: Live
+      to: IdleDraining
+      trigger: 最后一个 client 关 WS（clients.size==0）；启动 CLIENT_DRAIN_GRACE_MS = 5 分钟计时
+    - from: IdleDraining
+      to: Live
+      trigger: 任一新 client attach（在 grace 内）
+    - from: IdleDraining
+      to: Killed
+      trigger: grace 计时到期且仍空闲；SIGTERM
+    - from: Thinking
+      to: Killed
+      trigger: 进程异常退出（exit 事件，code != 0）
+rules:
+  - content: 同一 sessionId 同时仅一个子进程；新 WS 带相同 resumeId 时直接 attach，不再 spawn
+    related_use_cases:
+      - server.ClaudeSessionBridge
+  - content: 没有 client 时不立即 kill，留 5 分钟 grace 容忍页面刷新 / NAT 抖动
+    related_use_cases:
+      - server.ClaudeSessionBridge
+  - content: thinking==true 时即使 grace 到期也不 kill；等下一次 result 再重新排期
+    related_use_cases:
+      - server.ClaudeSessionBridge
+  - content: WS 心跳 30s 一次；上一轮 pong 未到则 terminate（防 NAT 半连僵尸）
+    related_use_cases:
+      - server.ClaudeSessionBridge
+  - content: 检测到 jsonl 在我方静默期（自上次 selfWrite/userInput > EXTERNAL_QUIET_MS = 30s）被外部改写，向所有 client 广播 external_change 事件
+    related_use_cases:
+      - server.WatchJsonl
+  - content: set_model 通过 control_request(set_model) 发给 claude；模型生效后 claude 发新 system.init 携带新 model
+    related_use_cases:
+      - server.ClaudeSessionBridge
+  - content: stop 通过 control_request(interrupt) 发给 claude；进程不退出，result 事件 terminal_reason = aborted_streaming
+    related_use_cases:
+      - server.ClaudeSessionBridge
+relationships:
+  - kind: associates
+    target: Project
+    target_kind: business-entity
+    via: cwd
+    cardinality: many-to-one
+  - kind: associates
+    target: Session Transcript
+    target_kind: business-entity
+    cardinality: one-to-one
+    via: jsonlPath
+  - kind: depends-on
+    target: User
+    target_kind: business-entity
+    note: 通过 Tab → Workspace → User 间接关联；spawn 时使用 User.Settings.model

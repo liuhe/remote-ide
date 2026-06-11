@@ -1,0 +1,43 @@
+name: Session Transcript
+archetype: moment-interval
+fields:
+  - jsonlPath: "String, ~/.claude/projects/<encoded-cwd>/<sessionId>.jsonl；claude CLI 拥有"
+  - events: "Array<Line>, 按时间追加；每行一个 JSON 对象（user / assistant / system / file-history-snapshot / permission-mode / ...）"
+  - size: "Long (bytes), 物理大小"
+  - mtime: "Long (ms), 用作排序键"
+notes: >
+  这是 claude 自己拥有的事实文件——server 只读、watch、按 uuid 截断（rewind）。
+  /api/projects/:id/sessions 通过扫 ~/.claude/projects/<encoded-cwd>/ 列出该 Project
+  下所有可恢复会话；transcript 接口分页返回 user/assistant 事件。
+state_machine:
+  field: implied
+  states: [Empty, Growing, Truncated]
+  transitions:
+    - from: Empty
+      to: Growing
+      trigger: claude 写入首行（通常是 system.init）
+    - from: Growing
+      to: Truncated
+      trigger: server.RewindSession 截断到目标 uuid 处（删该行及之后所有内容）
+    - from: Truncated
+      to: Growing
+      trigger: 新一轮 prompt 触发 claude 再追加
+rules:
+  - content: 列出会话时跳过 housekeeping 记录，扫前 64KB 找首条 user.message.content 作为 preview（最多 120 字符）
+    related_use_cases:
+      - server.ListSessions
+  - content: 读 transcript 时只保留 type ∈ {user, assistant} 的行；分页参数 limit ≤ 500、before 指定结束游标，返回 events + startIndex/endIndex/total
+    related_use_cases:
+      - server.ReadTranscript
+  - content: 截断时按物理字节偏移 truncate（不重写文件），保持其它行不变；只匹配 obj.type=='user' && obj.uuid==messageUuid 的行
+    related_use_cases:
+      - server.RewindSession
+  - content: rewind 写新 prompt 后必须等 claude flush 该 user 行到 jsonl（waitForUserRecordFlushed，最长 5s）再广播 rewind，否则前端 refetch 拿不到新条目
+    related_use_cases:
+      - server.RewindSession
+relationships:
+  - kind: associates
+    target: Claude Session
+    target_kind: business-entity
+    cardinality: one-to-one
+    via: jsonlPath

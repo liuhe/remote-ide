@@ -1,0 +1,36 @@
+name: Auth Session
+archetype: moment-interval
+fields:
+  - token: "Hex String (32 bytes), 随机生成；以 cookie 'ride_session' 形式发回浏览器（HttpOnly, SameSite=Lax, path=/）"
+  - userId: "String (uuid), 关联到 User"
+  - expiresAt: "Long (ms epoch), 创建时间 + 60 天 TTL"
+notes: >
+  落盘在 ~/.config/remote-ide/sessions.json，server 重启后仍能续；
+  legacy 单用户格式（token→number）启动时被丢弃，相应用户需重新登录。
+  写盘有 250ms debounce，避免请求突发期间反复 fsync。
+state_machine:
+  field: implied-by-time
+  states: [Valid, Expired]
+  transitions:
+    - from: Valid
+      to: Expired
+      trigger: 当前时间 >= expiresAt（不持久化，校验时判断并从内存表删除）
+    - from: Valid
+      to: Expired
+      trigger: 用户调用 /api/auth/logout（显式删除）
+rules:
+  - content: cookie 设 HttpOnly + SameSite=Lax，防止脚本读取与跨站滥用
+    related_use_cases:
+      - server.Login
+  - content: 错误响应只统一返回 "invalid credentials"，不区分 "用户不存在" / "密码错误"，避免账号枚举
+    related_use_cases:
+      - server.Login
+  - content: 未配置任何 User 时，所有 /api/*、/ws/*、/raw/* 一律 503 提示运营 `adduser`
+    related_use_cases:
+      - server.AuthGate
+relationships:
+  - kind: associates
+    target: User
+    target_kind: business-entity
+    cardinality: many-to-one
+    via: userId

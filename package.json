@@ -1,0 +1,12 @@
+{
+  "name": "remote-ide",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "dev": "pnpm -r --parallel run dev",
+    "dev:server": "pnpm --filter server dev",
+    "dev:web": "pnpm --filter web dev",
+    "build": "pnpm -r run build"
+  },
+  "packageManager": "pnpm@11.1.2"
+}

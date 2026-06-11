@@ -1,0 +1,47 @@
+name: Export Artifact
+archetype: moment-interval
+fields:
+  - format: "Enum { markdown | pdf | png }"
+  - sourceSessionId: "String, 关联 Claude Session.sessionId（仅 Claude；Devin 暂未接 export）"
+  - filename: "String?, 用户可选；落到 Content-Disposition"
+  - theme: "Enum { dark | light | dim }, 渲染主题，跟随用户当时偏好"
+  - fontScale: "String?, 同上"
+  - bytes: "Buffer / Stream（一次性下载，不长期持久化）"
+notes: >
+  导出在前端发起：ExportView 把 transcript 渲染成 outerHTML（含工具调用块、图片
+  base64），POST /api/projects/:id/export 带 { html, theme, fontScale, format, filename }。
+  Markdown 由前端就地构造文本下载，不走 server；PDF/PNG 通过 server.RenderExport
+  跑 puppeteer-core + headless Chrome 渲染。
+  导出请求 body 上限 64MB（默认 Fastify 1MB 远不够），大会话常上数十 MB base64 图。
+state_machine:
+  field: lifecycle
+  states: [Rendering, Ready, Failed]
+  transitions:
+    - from: Rendering
+      to: Ready
+      trigger: puppeteer pdf/screenshot 成功并返回 buffer
+    - from: Rendering
+      to: Failed
+      trigger: Chrome 未找到 / renderer crash / 超时 → 500
+rules:
+  - content: 每次导出冷启动一个 Browser 实例（不复用），结束 close()；为长任务可靠性放弃 ~500ms 启动开销
+    related_use_cases:
+      - server.RenderExport
+  - content: 字体强制扩展 CJK fallback（PingFang / Hiragino / 微软雅黑 / Noto），headless Chrome 默认链不一定包含
+    related_use_cases:
+      - server.RenderExport
+  - content: PNG 超长页（> 2000px slice）走"滚动视口"切片再用 sharp 拼接，避免 renderer 在巨幅位图上 OOM crash
+    related_use_cases:
+      - server.RenderExport
+  - content: process.unhandledRejection 一律 log 后继续；Chrome 断连时 puppeteer 的 CallbackRegistry 会拒一堆 pending callback，不处理会拖垮 Node
+    related_use_cases:
+      - server.Boot
+relationships:
+  - kind: depends-on
+    target: Session Transcript
+    target_kind: business-entity
+    note: 渲染源；通过前端 ExportView 读取 transcript 生成 HTML
+  - kind: depends-on
+    target: Claude Session
+    target_kind: business-entity
+    via: sourceSessionId
