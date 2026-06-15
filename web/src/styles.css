@@ -148,6 +148,7 @@ body {
     transition: transform 0.18s ease;
     border-right: 1px solid var(--border);
     flex-direction: column;
+    padding-top: env(safe-area-inset-top);
   }
   .drawer.open { transform: translateX(0); }
   .drawer .files-panel { flex: 1 1 auto; min-height: 0; }

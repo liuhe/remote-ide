@@ -248,6 +248,7 @@ pages:
       - PersistWorkspace
     display_mappings:
       - 三栏（移动端折叠）：左侧 Project & Tab 列表，中部 Viewer/ChatPanel/DevinPanel，右侧（可选）Settings
+      - 移动端抽屉避开 safe-area 顶部，避免项目标题与系统状态栏重叠
 
   - name: FileViewerView
     related_use_cases: [FileTree, Viewer]
