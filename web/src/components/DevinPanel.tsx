@@ -1,10 +1,11 @@
-import { Suspense, lazy, useEffect, useLayoutEffect, useRef, useState } from 'react';
+import { Suspense, lazy, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import type { SendKey, Theme } from '../types';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter';
 import { vscDarkPlus, oneLight } from 'react-syntax-highlighter/dist/esm/styles/prism';
 import type { ExportMessage } from '../lib/export/types';
+import { makeRelPath } from '../lib/relPath';
 
 // See ChatPanel: the export pipeline only ships when the user opens ⤓.
 const ExportDialog = lazy(() =>
@@ -94,8 +95,8 @@ const FAMILY_ORDER = [
   'Other',
 ];
 
-function summarizeDevinTool(kind: string, rawInput: any, title?: string): string {
-  if (title && title.trim()) return title;
+function summarizeDevinTool(kind: string, rawInput: any, title: string | undefined, rel: (s: string) => string): string {
+  if (title && title.trim()) return rel(title);
   if (!rawInput || typeof rawInput !== 'object') return '';
   const r = rawInput as Record<string, any>;
   switch (kind) {
@@ -103,9 +104,9 @@ function summarizeDevinTool(kind: string, rawInput: any, title?: string): string
     case 'edit':
     case 'delete':
     case 'move':
-      return r.file_path ?? r.path ?? r.target_file ?? r.source_path ?? '';
+      return rel(r.file_path ?? r.path ?? r.target_file ?? r.source_path ?? '');
     case 'execute': {
-      const cmd: string = r.command ?? r.cmd ?? '';
+      const cmd: string = rel(r.command ?? r.cmd ?? '');
       const first = cmd.split('\n')[0] ?? '';
       return first.length > 80 ? first.slice(0, 80) + '…' : first;
     }
@@ -119,7 +120,8 @@ function summarizeDevinTool(kind: string, rawInput: any, title?: string): string
       // Pick the first stringy field as a best-effort hint.
       for (const [k, v] of Object.entries(r)) {
         if (typeof v === 'string' && v.length > 0) {
-          const s = v.length > 80 ? v.slice(0, 80) + '…' : v;
+          const s0 = rel(v);
+          const s = s0.length > 80 ? s0.slice(0, 80) + '…' : s0;
           return `${k}: ${s}`;
         }
       }
@@ -128,9 +130,9 @@ function summarizeDevinTool(kind: string, rawInput: any, title?: string): string
   }
 }
 
-function ToolFields({ input }: { input: any }) {
+function ToolFields({ input, rel }: { input: any; rel: (s: string) => string }) {
   if (!input || typeof input !== 'object') {
-    return <pre className="tool-field-value">{String(input)}</pre>;
+    return <pre className="tool-field-value">{rel(String(input))}</pre>;
   }
   return (
     <>
@@ -138,7 +140,7 @@ function ToolFields({ input }: { input: any }) {
         <div key={k} className="tool-field">
           <div className="tool-field-key">{k}</div>
           <pre className="tool-field-value">
-            {typeof v === 'string' ? v : JSON.stringify(v, null, 2)}
+            {typeof v === 'string' ? rel(v) : rel(JSON.stringify(v, null, 2))}
           </pre>
         </div>
       ))}
@@ -258,6 +260,7 @@ function modelLabel(opt: ConfigOption | null | undefined): string {
 
 export function DevinPanel({
   projectId,
+  projectPath,
   resumeId,
   sendKey,
   theme,
@@ -268,6 +271,7 @@ export function DevinPanel({
   onExportApi,
 }: {
   projectId: string;
+  projectPath?: string;
   resumeId?: string;
   sendKey: SendKey;
   theme: Theme;
@@ -277,6 +281,7 @@ export function DevinPanel({
   onSetDefaultModel?: (modelId: string) => void;
   onExportApi?: (api: { open: () => void; canExport: boolean } | null) => void;
 }) {
+  const rel = useMemo(() => makeRelPath(projectPath), [projectPath]);
   const [msgs, setMsgs] = useState<Msg[]>([]);
   const [input, setInput] = useState('');
   const [status, setStatus] = useState<Status>('connecting');
@@ -1101,7 +1106,7 @@ export function DevinPanel({
           const isOpen = expanded.has(m.id);
           const pending = m.status === 'pending' || m.status === 'in_progress';
           const failed = m.status === 'failed';
-          const summary = summarizeDevinTool(m.kind, m.rawInput, m.title);
+          const summary = summarizeDevinTool(m.kind, m.rawInput, m.title, rel);
           return (
             <div key={m.id} className={`msg msg-tool ${isOpen ? 'open' : ''}`}>
               <div className="tool-header" onClick={() => toggleExpanded(m.id)}>
@@ -1119,11 +1124,11 @@ export function DevinPanel({
               </div>
               {isOpen && (
                 <div className="tool-detail">
-                  <ToolFields input={m.rawInput} />
+                  <ToolFields input={m.rawInput} rel={rel} />
                   {m.output !== undefined && (
                     <div className="tool-field">
                       <div className="tool-field-key">output</div>
-                      <pre className="tool-field-value">{m.output}</pre>
+                      <pre className="tool-field-value">{rel(m.output)}</pre>
                     </div>
                   )}
                 </div>
@@ -1312,7 +1317,7 @@ export function DevinPanel({
             <div className="tool-popout-header">
               <span className="tool-name">{toolPopout.kind}</span>
               <span className="tool-summary">
-                {summarizeDevinTool(toolPopout.kind, toolPopout.rawInput, toolPopout.title)}
+                {summarizeDevinTool(toolPopout.kind, toolPopout.rawInput, toolPopout.title, rel)}
               </span>
               <button
                 className="tool-popout-close"
@@ -1321,11 +1326,11 @@ export function DevinPanel({
               >×</button>
             </div>
             <div className="tool-popout-body">
-              <ToolFields input={toolPopout.rawInput} />
+              <ToolFields input={toolPopout.rawInput} rel={rel} />
               {toolPopout.output !== undefined && (
                 <div className="tool-field">
                   <div className="tool-field-key">output</div>
-                  <pre className="tool-field-value tool-field-value-full">{toolPopout.output}</pre>
+                  <pre className="tool-field-value tool-field-value-full">{rel(toolPopout.output)}</pre>
                 </div>
               )}
             </div>
@@ -1338,11 +1343,11 @@ export function DevinPanel({
           <div className="permission-modal" onClick={(e) => e.stopPropagation()}>
             <div className="permission-header">
               <span className="permission-kind">[{permissionPrompt.toolCall.kind ?? 'tool'}]</span>
-              <span className="permission-title">{permissionPrompt.toolCall.title ?? 'Permission required'}</span>
+              <span className="permission-title">{rel(permissionPrompt.toolCall.title ?? 'Permission required')}</span>
             </div>
             {permissionPrompt.toolCall.rawInput && (
               <pre className="permission-input">
-                {JSON.stringify(permissionPrompt.toolCall.rawInput, null, 2)}
+                {rel(JSON.stringify(permissionPrompt.toolCall.rawInput, null, 2))}
               </pre>
             )}
             <div className="permission-actions">

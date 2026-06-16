@@ -440,6 +440,7 @@ export default function App() {
                     <div key={tabKey} style={style}>
                       <DevinPanel
                         projectId={activeProject.id}
+                        projectPath={activeProject.path}
                         resumeId={tab.resumeId}
                         sendKey={settings.sendKey}
                         theme={settings.theme}
@@ -469,6 +470,7 @@ export default function App() {
                   <div key={tabKey} style={style}>
                     <ChatPanel
                       projectId={activeProject.id}
+                      projectPath={activeProject.path}
                       resumeId={tab.resumeId}
                       sendKey={settings.sendKey}
                       theme={settings.theme}

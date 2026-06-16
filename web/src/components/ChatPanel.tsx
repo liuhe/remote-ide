@@ -1,10 +1,11 @@
-import { Suspense, lazy, useEffect, useLayoutEffect, useRef, useState } from 'react';
+import { Suspense, lazy, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import type { SendKey, Theme } from '../types';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter';
 import { vscDarkPlus, oneLight } from 'react-syntax-highlighter/dist/esm/styles/prism';
 import type { ExportMessage } from '../lib/export/types';
+import { makeRelPath } from '../lib/relPath';
 
 // Lazy: the export pipeline (dialog, view, markdown serialiser) is only needed
 // when the user actually clicks ⤓. Splitting it out shaves the main bundle.
@@ -39,9 +40,9 @@ function MarkdownText({ text, theme }: { text: string; theme: Theme }) {
   );
 }
 
-function ToolFields({ input }: { input: any }) {
+function ToolFields({ input, rel }: { input: any; rel: (s: string) => string }) {
   if (!input || typeof input !== 'object') {
-    return <pre className="tool-field-value">{String(input)}</pre>;
+    return <pre className="tool-field-value">{rel(String(input))}</pre>;
   }
   return (
     <>
@@ -49,7 +50,7 @@ function ToolFields({ input }: { input: any }) {
         <div key={k} className="tool-field">
           <div className="tool-field-key">{k}</div>
           <pre className="tool-field-value">
-            {typeof v === 'string' ? v : JSON.stringify(v, null, 2)}
+            {typeof v === 'string' ? rel(v) : rel(JSON.stringify(v, null, 2))}
           </pre>
         </div>
       ))}
@@ -57,7 +58,7 @@ function ToolFields({ input }: { input: any }) {
   );
 }
 
-function summarizeTool(name: string, input: any): string {
+function summarizeTool(name: string, input: any, rel: (s: string) => string): string {
   if (!input || typeof input !== 'object') return '';
   switch (name) {
     case 'Write':
@@ -65,15 +66,15 @@ function summarizeTool(name: string, input: any): string {
     case 'MultiEdit':
     case 'NotebookEdit':
     case 'Read':
-      return input.file_path ?? input.notebook_path ?? '';
+      return rel(input.file_path ?? input.notebook_path ?? '');
     case 'Bash': {
-      const cmd: string = input.command ?? '';
+      const cmd: string = rel(input.command ?? '');
       const first = cmd.split('\n')[0];
       const desc = input.description ? ` — ${input.description}` : '';
       return (first.length > 80 ? first.slice(0, 80) + '…' : first) + desc;
     }
     case 'Grep':
-      return `"${input.pattern ?? ''}"${input.path ? ` in ${input.path}` : ''}`;
+      return `"${input.pattern ?? ''}"${input.path ? ` in ${rel(input.path)}` : ''}`;
     case 'Glob':
       return input.pattern ?? '';
     case 'Task':
@@ -88,7 +89,10 @@ function summarizeTool(name: string, input: any): string {
       const k = Object.keys(input)[0];
       if (!k) return '';
       const v = input[k];
-      if (typeof v === 'string') return `${k}: ${v.length > 60 ? v.slice(0, 60) + '…' : v}`;
+      if (typeof v === 'string') {
+        const s = rel(v);
+        return `${k}: ${s.length > 60 ? s.slice(0, 60) + '…' : s}`;
+      }
       return k;
     }
   }
@@ -239,6 +243,7 @@ function buildFromEvents(events: any[], orphanResults: Map<string, string>): Msg
 
 export function ChatPanel({
   projectId,
+  projectPath,
   resumeId,
   sendKey,
   theme,
@@ -247,6 +252,7 @@ export function ChatPanel({
   onExportApi,
 }: {
   projectId: string;
+  projectPath?: string;
   resumeId?: string;
   sendKey: SendKey;
   theme: Theme;
@@ -254,6 +260,7 @@ export function ChatPanel({
   onSessionId?: (uuid: string) => void;
   onExportApi?: (api: { open: () => void; canExport: boolean } | null) => void;
 }) {
+  const rel = useMemo(() => makeRelPath(projectPath), [projectPath]);
   const [msgs, setMsgs] = useState<Msg[]>([]);
   const [input, setInput] = useState('');
   const [status, setStatus] = useState<Status>('connecting');
@@ -925,7 +932,7 @@ export function ChatPanel({
           if (m.role === 'assistant') return <div key={m.id} className="msg msg-assistant"><MarkdownText text={m.text} theme={theme} /></div>;
           if (m.role === 'system') return <div key={m.id} className="msg msg-system">{m.text}</div>;
           const isOpen = expanded.has(m.id);
-          const summary = summarizeTool(m.name, m.input);
+          const summary = summarizeTool(m.name, m.input, rel);
           return (
             <div key={m.id} className={`msg msg-tool ${isOpen ? 'open' : ''}`}>
               <div
@@ -951,11 +958,11 @@ export function ChatPanel({
               </div>
               {isOpen && (
                 <div className="tool-detail">
-                  <ToolFields input={m.input} />
+                  <ToolFields input={m.input} rel={rel} />
                   {m.output !== undefined && (
                     <div className="tool-field">
                       <div className="tool-field-key">output</div>
-                      <pre className="tool-field-value">{m.output}</pre>
+                      <pre className="tool-field-value">{rel(m.output)}</pre>
                     </div>
                   )}
                 </div>
@@ -1113,7 +1120,7 @@ export function ChatPanel({
           <div className="tool-popout-modal" onClick={(e) => e.stopPropagation()}>
             <div className="tool-popout-header">
               <span className="tool-name">{toolPopout.name}</span>
-              <span className="tool-summary">{summarizeTool(toolPopout.name, toolPopout.input)}</span>
+              <span className="tool-summary">{summarizeTool(toolPopout.name, toolPopout.input, rel)}</span>
               <button
                 className="tool-popout-close"
                 onClick={() => setToolPopout(null)}
@@ -1121,11 +1128,11 @@ export function ChatPanel({
               >×</button>
             </div>
             <div className="tool-popout-body">
-              <ToolFields input={toolPopout.input} />
+              <ToolFields input={toolPopout.input} rel={rel} />
               {toolPopout.output !== undefined && (
                 <div className="tool-field">
                   <div className="tool-field-key">output</div>
-                  <pre className="tool-field-value tool-field-value-full">{toolPopout.output}</pre>
+                  <pre className="tool-field-value tool-field-value-full">{rel(toolPopout.output)}</pre>
                 </div>
               )}
             </div>
